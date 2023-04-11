@@ -1,0 +1,150 @@
+---
+AWSTemplateFormatVersion: '2010-09-09' #CloudFormation template version in which whole template is written.
+
+Parameters:
+  LatestAmiId:      #parameter for AMI
+    Description: Region specific image from the Parameter Store
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'                  #Parameter as AMI Id
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2' #Amazon Machine Image(AMI)
+
+  InstanceType:     #Parameter for Instance type
+    Description: Amazon EC2 instance type for the instances
+    Type: String             #take value of Instance type as string
+    Default: t2.micro        #Instance type of your choice 
+
+  VPC:              #Parameter for VPC
+    Type: 'AWS::EC2::VPC::Id'            # List of all the available vpcs in region
+    Description: VPC that enables resources in public subnets to connect to the internet
+
+  Subnets:          #Parameter for subnets
+    Type: 'List<AWS::EC2::Subnet::Id>'   #List of all available subnets in selected vpc
+    Description: A list of subnets for the Auto Scaling group
+
+  KeyName:          #Parameter for keyname
+    Description: Name of an existing EC2 key pair to allow SSH access to the instances
+    Type: 'AWS::EC2::KeyPair::KeyName'   #list of all the available keynames (purpose: for login into server)
+
+  OperatorEmail:    #Parameter for email notification
+    Description: The email address to notify when there are any scaling activities
+    Type: String      #SNS service to send info about infrastructure to user taken as string value
+
+Resources:
+  ELBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ELB Security Group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 8080
+        ToPort: 8080
+        CidrIp: 0.0.0.0/0
+
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EC2 Security Group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        SourceSecurityGroupId:
+          Fn::GetAtt:
+          - ELBSecurityGroup
+          - GroupId
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 0.0.0.0/0
+
+  EC2TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 15
+      HealthyThresholdCount: 5
+      Matcher:
+        HttpCode: '200'
+      Name: EC2TargetGroup
+      Port: 80
+      Protocol: HTTP
+      TargetGroupAttributes:
+      - Key: deregistration_delay.timeout_seconds
+        Value: '20'
+      UnhealthyThresholdCount: 3
+      VpcId: !Ref VPC
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref EC2TargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 8080
+      Protocol: HTTP
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Subnets: !Ref Subnets
+      SecurityGroups:
+        - !GetAtt ELBSecurityGroup.GroupId
+
+  ASGLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties: 
+      LaunchTemplateName: !Sub ${AWS::StackName}-launch-template
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyName
+        SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install -y httpd php mysql
+
+            # Configure Apache
+            systemctl start httpd
+            systemctl enable httpd
+            echo "<?php phpinfo(); ?>" > /var/www/html/index.php
+
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: !Ref OperatorEmail
+          Protocol: email
+  myASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ASGLaunchTemplate
+        Version: !GetAtt ASGLaunchTemplate.LatestVersionNumber
+      MaxSize: '2'
+      MinSize: '1'
+      DesiredCapacity: '2'
+      NotificationConfigurations:
+        - TopicARN: !Ref NotificationTopic
+          NotificationTypes: ['autoscaling:EC2_INSTANCE_LAUNCH', 'autoscaling:EC2_INSTANCE_LAUNCH_ERROR', 'autoscaling:EC2_INSTANCE_TERMINATE', 'autoscaling:EC2_INSTANCE_TERMINATE_ERROR']
+      TargetGroupARNs:
+        - !Ref EC2TargetGroup
+      VPCZoneIdentifier: !Ref Subnets
+      MetricsCollection: 
+        - Granularity: 1Minute
+          Metrics: 
+            - GroupMinSize
+            - GroupMaxSize
+      Tags:
+        - Key: Name
+          Value: LAMP Server
+          PropagateAtLaunch: true
+
+        - Key: Purpose
+          Value: LAMPServerGroup
+          PropagateAtLaunch: false
