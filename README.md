@@ -10,4 +10,4 @@ Also, the Metrics of the server should be monitored by CloudWatch and get the st
 
 # Get complete demonstration of project using Following link:
 
-## Project Link: https://abhishek003.hashnode.dev/building-a-resilient-lamp-stack-on-aws-with-cloudformation-and-auto-scaling
+## Project Demonstration Link: https://abhishek003.hashnode.dev/building-a-resilient-lamp-stack-on-aws-with-cloudformation-and-auto-scaling
